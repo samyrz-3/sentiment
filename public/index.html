@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Earnings Signal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet"/>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#040b16;font-family:'JetBrains Mono',monospace;color:#a0b8c8}
+    @keyframes slideUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+    @keyframes glow{0%,100%{box-shadow:none}50%{box-shadow:0 0 28px rgba(34,229,160,0.12)}}
+    @keyframes scanline{0%{transform:translateX(-100%)}100%{transform:translateX(100vw)}}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    ::-webkit-scrollbar{width:3px}
+    ::-webkit-scrollbar-track{background:#060d18}
+    ::-webkit-scrollbar-thumb{background:#1a2535;border-radius:2px}
+    button{cursor:pointer;transition:all .15s ease;font-family:'JetBrains Mono',monospace}
+    input,textarea{font-family:'JetBrains Mono',monospace;outline:none}
+    .card{background:#070e1c;border:1px solid #111d2e;border-radius:10px;padding:14px}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useCallback, useEffect } = React;
+
+// ── NLP Fallback Engine ───────────────────────────────────────────────────────
+const LEX = {
+  strongBull: ["record","exceeded","beat","surpassed","accelerating","outperformed","raised guidance","strong demand","well above","above expectations","all-time high","breakthrough"],
+  bull: ["growth","increased","improved","positive","confident","optimistic","strength","solid","healthy","on track","pleased","excited","favorable","delivered","milestone"],
+  bear: ["declined","decreased","miss","below","challenging","headwind","uncertain","pressure","weakness","difficult","cautious","concern","risk","impacted","lower than","disappointing","slowed"],
+  strongBear: ["significant miss","significant decline","major concern","well below","significantly below","major headwind","serious concern","cut guidance","lowered guidance","withdrew guidance"],
+  guidance:["guidance","outlook","forecast","expecting","anticipate","full year","next quarter","fiscal year"],
+  beat:["beat","exceeded","above","ahead of","surpassed","record","better than expected","outperformed"],
+  miss:["miss","below","fell short","disappointed","came in below","weaker than","less than expected"],
+  eps:["eps","earnings per share","net income","profit","bottom line","earnings"],
+  revenue:["revenue","sales","top line","bookings","billings","arr"],
+  margin:["margin","gross margin","operating margin","ebitda","profitability"],
+  churn:["churn","retention","attrition","customer loss"],
+  ai:["ai","artificial intelligence","machine learning","generative","agentic","copilot"],
+  macro:["macro","economy","recession","interest rate","inflation","tariff","currency"],
+  capex:["capex","capital expenditure","data center","buildout"],
+  fcf:["free cash flow","fcf","cash generation"],
+};
+const has = (t,w) => w.some(x=>t.toLowerCase().includes(x));
+const cnt = (t,w) => w.filter(x=>t.toLowerCase().includes(x)).length;
+const cat = t => has(t,LEX.ai)?"AI/Tech":has(t,LEX.fcf)?"Cash Flow":has(t,LEX.margin)?"Margins":has(t,LEX.revenue)?"Revenue":has(t,LEX.eps)?"EPS":has(t,LEX.churn)?"Churn":has(t,LEX.guidance)?"Guidance":has(t,LEX.macro)?"Macro":has(t,LEX.capex)?"CapEx":"Other";
+const bestQuote = t => { const ss=(t.match(/[^.!?]+[.!?]*/g)||[t]); let b=ss[0],bs=-1; for(const s of ss){const sc=Math.abs(cnt(s,[...LEX.strongBull,...LEX.bull,...LEX.strongBear,...LEX.bear]))*10+(s.length>20?5:0); if(sc>bs){bs=sc;b=s;}} return b.trim().slice(0,110); };
+
+function nlpAnalyze(seg, market, priorScore) {
+  const text = seg.text;
+  let score = cnt(text,LEX.strongBull)*18 + cnt(text,LEX.bull)*7 - cnt(text,LEX.bear)*7 - cnt(text,LEX.strongBear)*18;
+  score = Math.max(-100,Math.min(100,score));
+  const isBeat=has(text,LEX.beat), isMiss=has(text,LEX.miss);
+  const hG=has(text,LEX.guidance), hM=has(text,LEX.margin), hR=has(text,LEX.revenue);
+  const hE=has(text,LEX.eps), hAI=has(text,LEX.ai), hCh=has(text,LEX.churn);
+  const hMac=has(text,LEX.macro), hCap=has(text,LEX.capex), hFCF=has(text,LEX.fcf);
+  const hHedge=has(text.toLowerCase(),["however","but","although","despite","uncertain","cautious","headwind","risk"]);
+  const flags=[];
+  if(isBeat&&(hR||hE||hG||hAI)){const c=hR?"Revenue":hE?"EPS":hG?"Guidance":"AI/Tech";flags.push({type:"BEAT",speaker:seg.speaker,quote:bestQuote(text),insight:`${c} outperformance vs consensus — primary bull catalyst.`,impact:"HIGH",category:c});}
+  else if(isMiss&&(hR||hE||hG||hM||hFCF||hCh)){const c=hG?"Guidance":hM?"Margins":hFCF?"Cash Flow":hCh?"Churn":"Revenue";flags.push({type:"MISS",speaker:seg.speaker,quote:bestQuote(text),insight:`${c} shortfall raises earnings risk for coming quarters.`,impact:"HIGH",category:c});}
+  if(hAI&&!isMiss&&score>5)flags.push({type:"POSITIVE",speaker:seg.speaker,quote:bestQuote(text),insight:"AI segment strength — key long-term re-rating driver.",impact:"MEDIUM",category:"AI/Tech"});
+  if(hMac&&hHedge)flags.push({type:"WARNING",speaker:seg.speaker,quote:bestQuote(text),insight:"Macro headwind flagged — watch for estimate revisions.",impact:"MEDIUM",category:"Macro"});
+  if(hCh)flags.push({type:isMiss?"MISS":"WARNING",speaker:seg.speaker,quote:bestQuote(text),insight:"Elevated churn is a leading indicator of revenue deceleration.",impact:"HIGH",category:"Churn"});
+  if(hHedge&&!isBeat&&flags.length===0)flags.push({type:"HEDGE",speaker:seg.speaker,quote:bestQuote(text),insight:"Hedged language signals management uncertainty.",impact:"LOW",category:cat(text)});
+  if(score>15&&flags.length===0)flags.push({type:"BULLISH",speaker:seg.speaker,quote:bestQuote(text),insight:`Strong positive language on ${cat(text)}.`,impact:"MEDIUM",category:cat(text)});
+  if(score<-15&&flags.length===0)flags.push({type:"BEARISH",speaker:seg.speaker,quote:bestQuote(text),insight:`Negative sentiment on ${cat(text)} adds downside risk.`,impact:"MEDIUM",category:cat(text)});
+  const bc=cnt(text,[...LEX.strongBull,...LEX.bull]), nc=cnt(text,[...LEX.strongBear,...LEX.bear]);
+  const combined=Math.round(priorScore*0.35+score*0.65);
+  const overall=combined>15?"BULLISH":combined<-15?"BEARISH":"NEUTRAL";
+  const vsExp=flags.some(f=>f.type==="BEAT")?"BEAT":flags.some(f=>f.type==="MISS")?"MISS":"INLINE";
+  const bias=combined>40?"STRONG_BUY":combined>15?"BUY":combined<-40?"STRONG_SELL":combined<-15?"SELL":"HOLD";
+  return {
+    overallSentiment:overall, sentimentScore:combined, vsExpectations:vsExp,
+    confidence:Math.min(92,Math.max(40,55+Math.abs(score)/2)), priceActionBias:bias,
+    estimatedMove:combined>40?"+5-8%":combined>20?"+2-5%":combined<-40?"-5-8%":combined<-20?"-2-5%":"±1-2%",
+    flags,
+    metrics:{
+      guidanceQuality:hG?(isBeat?75:isMiss?25:50):50,
+      managementCredibility:Math.min(95,Math.max(20,65+bc*4-nc*5)),
+      transparencyScore:Math.min(95,Math.max(20,60+(hG?10:0)+bc*2)),
+      forwardMomentum:Math.max(-100,Math.min(100,score+(isBeat?20:0)-(isMiss?20:0))),
+      riskSignals:Math.min(95,Math.max(5,20+nc*8+(hCh?15:0)+(isMiss?20:0))),
+    },
+    vsConsensus:{
+      eps:hE?(isBeat?"BEAT":isMiss?"MISS":"INLINE"):"UNKNOWN",
+      revenue:hR?(isBeat?"BEAT":isMiss?"MISS":"INLINE"):"UNKNOWN",
+      guidance:hG?(isBeat?"BEAT":isMiss?"MISS":"INLINE"):"UNKNOWN",
+      margins:hM?(isMiss?"MISS":score>0?"BEAT":"INLINE"):"UNKNOWN",
+    },
+    keyThemes:[hAI&&"AI/Automation",hR&&isBeat&&"Revenue Beat",hM&&"Margin Focus",hG&&(isBeat?"Guidance Raise":isMiss?"Guidance Cut":"Guidance In-Line"),hMac&&"Macro Uncertainty"].filter(Boolean).slice(0,4),
+    redFlags:[hCh&&"Elevated churn",hFCF&&isMiss&&"FCF miss",hM&&isMiss&&"Margin compression",hG&&isMiss&&"Guidance cut"].filter(Boolean).slice(0,3),
+    analystTakeaway:overall==="BULLISH"?`${seg.speaker} commentary signals outperformance — constructive tone supports bull thesis. ${flags[0]?flags[0].insight:""}`:overall==="BEARISH"?`${seg.speaker} remarks introduce downside risk. Monitor for estimate revision pressure.`:`${seg.speaker} tone is measured with mixed signals. No clear directional bias.`,
+  };
+}
+
+// ── Market Fallbacks ──────────────────────────────────────────────────────────
+const PRESETS = {
+  NVDA:{epsConsensus:5.59,revenueConsensus:32.5,revenueUnit:"B",priceTargetLow:100,priceTargetAvg:164,priceTargetHigh:220,analystBuy:38,analystHold:5,analystSell:1,shortInterest:"1.8%",streetSentiment:"strongly bullish",keyWatchPoints:["Data center revenue","Blackwell GPU ramp","China export controls","Gross margin trajectory"],recentHeadlines:["Analysts raise PT on AI demand surge","Blackwell supply bottlenecks flagged","AMD competition intensifying"]},
+  MSFT:{epsConsensus:3.10,revenueConsensus:69.0,revenueUnit:"B",priceTargetLow:380,priceTargetAvg:472,priceTargetHigh:550,analystBuy:42,analystHold:4,analystSell:1,shortInterest:"0.6%",streetSentiment:"bullish",keyWatchPoints:["Azure growth rate","Copilot monetization","Operating margins","OpenAI returns"],recentHeadlines:["Azure growth key swing factor","Copilot adoption closely tracked","Operating leverage expected"]},
+  AAPL:{epsConsensus:2.35,revenueConsensus:124.0,revenueUnit:"B",priceTargetLow:175,priceTargetAvg:232,priceTargetHigh:300,analystBuy:28,analystHold:14,analystSell:4,shortInterest:"0.8%",streetSentiment:"cautiously optimistic",keyWatchPoints:["iPhone demand","Services growth","India expansion","AI adoption"],recentHeadlines:["iPhone upgrade cycle tied to AI","Services accelerating","India as China hedge"]},
+  AMZN:{epsConsensus:1.36,revenueConsensus:187.0,revenueUnit:"B",priceTargetLow:185,priceTargetAvg:240,priceTargetHigh:290,analystBuy:46,analystHold:3,analystSell:0,shortInterest:"0.7%",streetSentiment:"bullish",keyWatchPoints:["AWS re-acceleration","Advertising revenue","Retail margins","AI services"],recentHeadlines:["AWS re-acceleration is bull catalyst","Ad revenue outpacing consensus","Retail margin expansion on track"]},
+};
+const fallbackMarket = t => ({ticker:t,...(PRESETS[t]||{epsConsensus:2.45,revenueConsensus:4.2,revenueUnit:"B",priceTargetLow:185,priceTargetAvg:224,priceTargetHigh:290,analystBuy:28,analystHold:8,analystSell:3,shortInterest:"4.2%",streetSentiment:"cautiously optimistic",keyWatchPoints:["Revenue growth","Margins","Guidance","FCF"],recentHeadlines:["Street expects in-line results","Margin trajectory key debate","Guidance credibility will be tested"]})});
+
+// ── API Calls ─────────────────────────────────────────────────────────────────
+async function apiFetchMarket(ticker) {
+  try {
+    const r = await fetch("/api/market",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker})});
+    const d = await r.json();
+    if(d.success&&d.data) return {data:d.data,source:"ai"};
+    throw new Error(d.error);
+  } catch { return {data:fallbackMarket(ticker),source:"local"}; }
+}
+
+async function apiAnalyze(segment, transcript, market, priorScore) {
+  try {
+    const r = await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({segment,transcript,market,priorScore})});
+    const d = await r.json();
+    if(d.success&&d.analysis) return {analysis:d.analysis,source:"ai"};
+    throw new Error(d.error);
+  } catch { return {analysis:nlpAnalyze(segment,market,priorScore),source:"local"}; }
+}
+
+// ── Demo Data ─────────────────────────────────────────────────────────────────
+const DEMO = [
+  {speaker:"CEO",text:"Good morning. I am proud to report record revenue of 4.38 billion, significantly exceeding our guidance and beating street expectations of 4.1 billion. Our AI-powered suite drove 34 percent growth in enterprise bookings, well above the 22 percent the street had modeled. Demand has never been stronger."},
+  {speaker:"CFO",text:"EPS came in at 2.67, beating consensus of 2.45. However gross margins contracted 80 basis points to 67.2 percent driven by elevated cloud infrastructure costs and data center capex. Free cash flow was 820 million, slightly below our internal target. Customer churn in enterprise ticked up to 6.2 percent versus 5.8 last year, which we are monitoring closely."},
+  {speaker:"CEO",text:"For fiscal year 2025 we are raising guidance. We now expect revenue growth of 18 to 21 percent, above analyst models of 16 to 18 percent. We are excited about our agentic AI platform launch in Q2. That said the macro environment remains uncertain and we are being prudent on hiring."},
+  {speaker:"CFO",text:"Q1 2025 guidance: revenue of 4.55 to 4.65 billion versus consensus of 4.7 billion. Operating margins 17 to 18 percent as we continue investing heavily. We expect these headwinds to persist through H1 but improve in the back half as we gain operating leverage."},
+];
+
+// ── UI Components ─────────────────────────────────────────────────────────────
+const SCFG={BEAT:{color:"#22e5a0",icon:"▲",bg:"rgba(34,229,160,0.07)"},MISS:{color:"#ff3d5a",icon:"▼",bg:"rgba(255,61,90,0.07)"},INLINE:{color:"#f5c842",icon:"≈",bg:"rgba(245,200,66,0.07)"},WARNING:{color:"#f5c842",icon:"⚠",bg:"rgba(245,200,66,0.07)"},POSITIVE:{color:"#22e5a0",icon:"★",bg:"rgba(34,229,160,0.07)"},HEDGE:{color:"#8090a8",icon:"~",bg:"rgba(128,144,168,0.05)"},BEARISH:{color:"#ff3d5a",icon:"▼",bg:"rgba(255,61,90,0.07)"},BULLISH:{color:"#22e5a0",icon:"▲",bg:"rgba(34,229,160,0.07)"}};
+
+function Gauge({score}){
+  const norm=Math.max(0,Math.min(1,(score+100)/200));
+  const color=score>15?"#22e5a0":score<-15?"#ff3d5a":"#f5c842";
+  const cx=100,cy=90,r=68;
+  const rad=d=>d*Math.PI/180;
+  const pt=a=>[cx+r*Math.cos(rad(a)),cy+r*Math.sin(rad(a))];
+  const [sx,sy]=pt(-175),[ex,ey]=pt(-5);
+  const ea=-175+norm*170;
+  const [fx,fy]=pt(ea);
+  const nx=cx+55*Math.cos(rad(ea)),ny=cy+55*Math.sin(rad(ea));
+  return(
+    <svg viewBox="0 0 200 110" width="100%" style={{maxWidth:200,display:"block",margin:"0 auto"}}>
+      <defs><filter id="gw"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      <path d={`M${sx},${sy} A${r},${r},0,1,1,${ex},${ey}`} fill="none" stroke="#0d1828" strokeWidth="12" strokeLinecap="round"/>
+      {norm>0.01&&<path d={`M${sx},${sy} A${r},${r},0,${norm>0.5?1:0},1,${fx},${fy}`} fill="none" stroke={color} strokeWidth="6" strokeLinecap="round" filter="url(#gw)"/>}
+      <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2.5" strokeLinecap="round" filter="url(#gw)"/>
+      <circle cx={cx} cy={cy} r="4.5" fill={color}/>
+      <text x="18" y="106" fill="#ff3d5a66" fontSize="8" fontFamily="monospace" textAnchor="middle">BEAR</text>
+      <text x="100" y="16" fill="#f5c84266" fontSize="8" fontFamily="monospace" textAnchor="middle">NEUTRAL</text>
+      <text x="182" y="106" fill="#22e5a066" fontSize="8" fontFamily="monospace" textAnchor="middle">BULL</text>
+    </svg>
+  );
+}
+
+function Spark({data}){
+  if(!data||data.length<2)return null;
+  const min=Math.min(...data),max=Math.max(...data),range=max-min||1;
+  const W=220,H=36;
+  const x=i=>(i/(data.length-1))*W;
+  const y=v=>H-((v-min)/range)*(H-6)-3;
+  const pts=data.map((v,i)=>`${x(i)},${y(v)}`).join(" ");
+  const last=data[data.length-1];
+  const c=last>15?"#22e5a0":last<-15?"#ff3d5a":"#f5c842";
+  return(
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none">
+      <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={c} stopOpacity="0.2"/><stop offset="100%" stopColor={c} stopOpacity="0"/></linearGradient></defs>
+      <polygon points={`0,${H} ${pts} ${W},${H}`} fill="url(#sg)"/>
+      <polyline points={pts} fill="none" stroke={c} strokeWidth="1.5" strokeLinejoin="round"/>
+      <circle cx={x(data.length-1)} cy={y(last)} r="3" fill={c}/>
+    </svg>
+  );
+}
+
+function Bar({label,value,color}){
+  const p=Math.max(0,Math.min(100,value||0));
+  const c=color||(p>65?"#22e5a0":p<35?"#ff3d5a":"#f5c842");
+  return(
+    <div style={{marginBottom:11}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+        <span style={{fontSize:9,color:"#4a5a6a",fontFamily:"monospace",textTransform:"uppercase",letterSpacing:1}}>{label}</span>
+        <span style={{fontSize:9,color:c,fontFamily:"monospace",fontWeight:700}}>{Math.round(p)}</span>
+      </div>
+      <div style={{height:2,background:"#080f1a",borderRadius:2,overflow:"hidden"}}>
+        <div style={{height:"100%",width:`${p}%`,background:`linear-gradient(90deg,${c}88,${c})`,borderRadius:2,transition:"width 0.9s cubic-bezier(.4,0,.2,1)"}}/>
+      </div>
+    </div>
+  );
+}
+
+function FlagCard({flag,isNew}){
+  const cfg=SCFG[flag.type]||SCFG.HEDGE;
+  const ic={HIGH:"#ff3d5a",MEDIUM:"#f5c842",LOW:"#4a5a6a"};
+  return(
+    <div style={{background:cfg.bg,border:`1px solid ${cfg.color}18`,borderLeft:`3px solid ${cfg.color}`,borderRadius:8,padding:"10px 13px",marginBottom:8,animation:isNew?"slideUp .25s ease both":"none"}}>
+      <div style={{display:"flex",gap:5,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+        <span style={{fontSize:9,fontWeight:700,padding:"2px 7px",background:cfg.color,color:"#040a14",borderRadius:3,fontFamily:"monospace"}}>{cfg.icon} {flag.type}</span>
+        {flag.speaker&&<span style={{fontSize:9,color:"#5070b0",background:"rgba(50,70,160,0.1)",padding:"2px 6px",borderRadius:3,fontFamily:"monospace"}}>{flag.speaker}</span>}
+        {flag.category&&<span style={{fontSize:9,color:"#3a5060",fontFamily:"monospace"}}>{flag.category}</span>}
+        {flag.impact&&<span style={{fontSize:9,color:ic[flag.impact]||"#4a5a6a",fontFamily:"monospace",marginLeft:"auto"}}>{flag.impact}</span>}
+      </div>
+      {flag.quote&&<div style={{fontSize:11,color:"#5a7080",fontStyle:"italic",marginBottom:5,lineHeight:1.5,borderLeft:"1px solid #1a2840",paddingLeft:8}}>"{flag.quote}"</div>}
+      <div style={{fontSize:11,color:"#8aaabb",lineHeight:1.55}}>{flag.insight}</div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+function App(){
+  const [phase,setPhase]=useState("setup");
+  const [ticker,setTicker]=useState("NVDA");
+  const [market,setMarket]=useState(null);
+  const [analysis,setAnalysis]=useState(null);
+  const [scores,setScores]=useState([]);
+  const [allFlags,setAllFlags]=useState([]);
+  const [transcript,setTranscript]=useState([]);
+  const [freshIds,setFreshIds]=useState(new Set());
+  const [mode,setMode]=useState("paste");
+  const [paste,setPaste]=useState("");
+  const [speaker,setSpeaker]=useState("CEO");
+  const [listening,setListening]=useState(false);
+  const [busy,setBusy]=useState(false);
+  const [tab,setTab]=useState("dash");
+  const [n,setN]=useState(0);
+  const [source,setSource]=useState(null);
+
+  const recRef=useRef(null),pending=useRef(""),timerRef=useRef(null);
+  const txRef=useRef([]),scoreRef=useRef([]),mktRef=useRef(null),fileRef=useRef(null);
+
+  const push=seg=>{txRef.current=[...txRef.current,seg];setTranscript([...txRef.current]);};
+
+  const launch=async()=>{
+    setPhase("loading");
+    const {data,source:s}=await apiFetchMarket(ticker.toUpperCase());
+    mktRef.current=data; setMarket(data); setSource(s); setPhase("live");
+  };
+
+  const process=useCallback(async seg=>{
+    setBusy(true);
+    const ctx=txRef.current.map(s=>`[${s.speaker}]: ${s.text}`).join("\n");
+    const prior=scoreRef.current.at(-1)??0;
+    const {analysis:res,source:s}=await apiAnalyze(seg,ctx,mktRef.current,prior);
+    setSource(s); setAnalysis(res); setN(u=>u+1);
+    scoreRef.current=[...scoreRef.current.slice(-49),res.sentimentScore];
+    setScores([...scoreRef.current]);
+    if(res.flags?.length){
+      const tagged=res.flags.map((f,i)=>({...f,_id:`${Date.now()}-${i}`}));
+      setFreshIds(new Set(tagged.map(f=>f._id)));
+      setAllFlags(p=>[...tagged,...p].slice(0,60));
+    }
+    setBusy(false);
+  },[]);
+
+  const addSeg=useCallback(async(text,spk)=>{
+    if(!text.trim())return;
+    const seg={speaker:spk||speaker,text:text.trim(),ts:new Date().toLocaleTimeString()};
+    push(seg); await process(seg);
+  },[speaker,process]);
+
+  const startMic=()=>{
+    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!SR)return;
+    const rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="en-US";
+    rec.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)pending.current+=e.results[i][0].transcript+" ";};
+    rec.start(); recRef.current=rec; setListening(true);
+    timerRef.current=setInterval(async()=>{const c=pending.current.trim();if(c.length>30){pending.current="";await addSeg(c);}},12000);
+  };
+  const stopMic=()=>{
+    recRef.current?.stop(); clearInterval(timerRef.current); setListening(false);
+    const c=pending.current.trim(); if(c.length>5){pending.current="";addSeg(c);}
+  };
+
+  const runDemo=async()=>{
+    if(busy)return;
+    txRef.current=[];scoreRef.current=[];
+    setTranscript([]);setAllFlags([]);setScores([]);setAnalysis(null);setN(0);
+    for(const seg of DEMO){
+      const s={...seg,ts:new Date().toLocaleTimeString()};
+      push(s); await process(s);
+      await new Promise(r=>setTimeout(r,500));
+    }
+  };
+
+  const submitPaste=async()=>{
+    if(!paste.trim()||busy)return;
+    const paras=paste.split(/\n\n+/).filter(p=>p.trim().length>10);
+    if(paras.length<=1){await addSeg(paste,speaker);return;}
+    for(const para of paras){
+      const m=para.match(/^\[(CEO|CFO|ANALYST)\]:\s*/i);
+      await addSeg(m?para.replace(m[0],"").trim():para,m?m[1].toUpperCase():speaker);
+      await new Promise(r=>setTimeout(r,200));
+    }
+  };
+
+  const reset=()=>{
+    try{stopMic();}catch{}
+    txRef.current=[];scoreRef.current=[];mktRef.current=null;pending.current="";
+    setPhase("setup");setMarket(null);setAnalysis(null);setAllFlags([]);
+    setScores([]);setTranscript([]);setN(0);setSource(null);
+  };
+
+  const nrm=v=>Math.max(0,Math.min(100,((v??0)+100)/2));
+  const sentColor=analysis?(analysis.sentimentScore>15?"#22e5a0":analysis.sentimentScore<-15?"#ff3d5a":"#f5c842"):"#4a5a6a";
+  const biasC={STRONG_BUY:"#22e5a0",BUY:"#60cc99",HOLD:"#f5c842",SELL:"#ff8060",STRONG_SELL:"#ff3d5a"};
+  const vsC=v=>({BEAT:"#22e5a0",MISS:"#ff3d5a",INLINE:"#f5c842",UNKNOWN:"#2a3a48"})[v]||"#2a3a48";
+  const vsI=v=>({BEAT:"▲",MISS:"▼",INLINE:"≈",UNKNOWN:"—"})[v]||"—";
+
+  // ── SETUP ──────────────────────────────────────────────────────────────────
+  if(phase==="setup"||phase==="loading") return(
+    <div style={{minHeight:"100vh",background:"#040b16",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:440,padding:40,animation:"fadeIn .4s ease"}}>
+        <div style={{textAlign:"center",marginBottom:40}}>
+          <div style={{fontSize:44,color:"#22e5a0",marginBottom:12,filter:"drop-shadow(0 0 20px #22e5a050)"}}>◈</div>
+          <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:30,fontWeight:800,color:"#cce4f4",letterSpacing:-1,marginBottom:8}}>Earnings Signal</h1>
+          <div style={{fontSize:9,color:"#1a2e20",letterSpacing:4,marginBottom:16,fontFamily:"'JetBrains Mono',monospace"}}>REAL-TIME CALL INTELLIGENCE</div>
+          <p style={{fontSize:12,color:"#2a4050",lineHeight:1.8}}>AI-powered sentiment analysis for earnings calls.<br/>Benchmarked against analyst consensus.</p>
+        </div>
+
+        {phase==="loading"?(
+          <div style={{textAlign:"center",padding:30}}>
+            <div style={{width:36,height:36,border:"3px solid #0d1e2e",borderTop:"3px solid #22e5a0",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 16px"}}/>
+            <div style={{fontSize:11,color:"#22e5a0",letterSpacing:1}}>Fetching market context for {ticker}…</div>
+          </div>
+        ):(
+          <>
+            <div className="card" style={{marginBottom:12}}>
+              <label style={{fontSize:9,color:"#1a3020",letterSpacing:3,textTransform:"uppercase",display:"block",marginBottom:9}}>Ticker Symbol</label>
+              <input value={ticker} onChange={e=>setTicker(e.target.value.toUpperCase())} placeholder="NVDA · MSFT · AAPL · AMZN"
+                style={{width:"100%",background:"#040b16",border:"1px solid #111d2e",borderRadius:7,padding:"12px 14px",color:"#22e5a0",fontSize:22,letterSpacing:4}}/>
+              <div style={{fontSize:9,color:"#111d2e",marginTop:8}}>Presets: NVDA · MSFT · AAPL · AMZN</div>
+            </div>
+            <button onClick={launch} style={{width:"100%",padding:"14px 0",background:"linear-gradient(135deg,#1a6040,#22e5a0)",border:"none",borderRadius:9,color:"#040b16",fontSize:12,letterSpacing:2,fontWeight:700,boxShadow:"0 4px 20px rgba(34,229,160,0.2)"}}>
+              LAUNCH →
+            </button>
+            <div className="card" style={{marginTop:14,fontSize:10,color:"#1a2e3a",lineHeight:1.9}}>
+              ✓ AI analysis via Claude (requires API key in .env)<br/>
+              ✓ Falls back to local NLP if API unavailable<br/>
+              ✓ Presets for NVDA · MSFT · AAPL · AMZN
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+
+  // ── LIVE ───────────────────────────────────────────────────────────────────
+  return(
+    <div style={{minHeight:"100vh",background:"#040b16",fontFamily:"'JetBrains Mono',monospace",color:"#a0b8c8"}}>
+      {listening&&<div style={{position:"fixed",top:0,left:0,right:0,height:"1px",background:"linear-gradient(90deg,transparent,#22e5a0,transparent)",animation:"scanline 2.5s linear infinite",zIndex:999,pointerEvents:"none"}}/>}
+      <div style={{position:"fixed",inset:0,backgroundImage:"linear-gradient(rgba(34,229,160,0.012) 1px,transparent 1px),linear-gradient(90deg,rgba(34,229,160,0.012) 1px,transparent 1px)",backgroundSize:"44px 44px",pointerEvents:"none",zIndex:0}}/>
+
+      <div style={{position:"relative",zIndex:1,maxWidth:1360,margin:"0 auto",padding:"13px 15px"}}>
+
+        {/* HEADER */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:13,flexWrap:"wrap",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:18,color:"#22e5a0"}}>◈</span>
+            <span style={{fontFamily:"'Syne',sans-serif",fontSize:17,fontWeight:800,color:"#c0d8ec"}}>Earnings Signal</span>
+            <span style={{fontSize:9,color:"#22e5a0",background:"rgba(34,229,160,0.07)",padding:"2px 8px",borderRadius:4,border:"1px solid #22e5a015",letterSpacing:2}}>{ticker}</span>
+            {source&&<span style={{fontSize:8,padding:"2px 8px",borderRadius:4,background:source==="ai"?"rgba(34,229,160,0.07)":"rgba(245,200,66,0.07)",color:source==="ai"?"#22e5a0":"#f5c842"}}>{source==="ai"?"● CLAUDE AI":"● LOCAL NLP"}</span>}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",background:"#070e1c",border:`1px solid ${listening?"#22e5a020":busy?"#5070e820":"#111d2e"}`,borderRadius:5}}>
+              <div style={{width:5,height:5,borderRadius:"50%",background:listening?"#22e5a0":busy?"#6080f0":"#1e2e3e",animation:(listening||busy)?"pulse 1s ease infinite":"none"}}/>
+              <span style={{fontSize:8,color:"#3a4a58",letterSpacing:1}}>{listening?"LIVE MIC":busy?"ANALYZING…":n>0?"STANDBY":"READY"}</span>
+            </div>
+            {n>0&&<span style={{fontSize:8,color:"#1a2830"}}>#{n}</span>}
+            <button onClick={reset} style={{padding:"3px 10px",background:"transparent",border:"1px solid #ff3d5a20",borderRadius:5,color:"#ff3d5a80",fontSize:8}}>RESET</button>
+          </div>
+        </div>
+
+        {/* INPUT */}
+        <div className="card" style={{marginBottom:11}}>
+          <div style={{display:"flex",gap:5,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}>
+            {[["mic","🎤 Mic"],["file","📁 File"],["paste","📋 Paste"]].map(([m,l])=>(
+              <button key={m} onClick={()=>setMode(m)} style={{padding:"3px 12px",border:"none",background:mode===m?"rgba(34,229,160,0.07)":"transparent",color:mode===m?"#22e5a0":"#3a4a58",fontSize:9,borderRadius:5,borderBottom:mode===m?"2px solid #22e5a0":"2px solid transparent"}}>{l}</button>
+            ))}
+            <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
+              <span style={{fontSize:8,color:"#1e2e3e"}}>SPEAKER:</span>
+              {["CEO","CFO","ANALYST"].map(s=>(
+                <button key={s} onClick={()=>setSpeaker(s)} style={{padding:"2px 8px",border:`1px solid ${speaker===s?"#304080":"#111d2e"}`,borderRadius:4,background:speaker===s?"rgba(40,60,140,0.15)":"transparent",color:speaker===s?"#5070cc":"#1e2e3e",fontSize:8}}>{s}</button>
+              ))}
+            </div>
+          </div>
+
+          {mode==="mic"&&(
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+              <button onClick={listening?stopMic:startMic} style={{padding:"7px 20px",borderRadius:7,border:"none",fontSize:9,letterSpacing:1,background:listening?"linear-gradient(135deg,#ff3d5a,#900020)":"linear-gradient(135deg,#1a6040,#22e5a0)",color:listening?"#fff":"#040b16",fontWeight:700}}>
+                {listening?"⏹ STOP":"🎤 START"}
+              </button>
+              <button onClick={runDemo} disabled={busy} style={{padding:"7px 16px",borderRadius:7,border:"1px solid #1e3060",background:"transparent",color:"#4060c0",fontSize:9,opacity:busy?0.4:1}}>▶ DEMO</button>
+              <span style={{fontSize:9,color:"#1a2530"}}>Chrome/Edge · analyzes every 12s</span>
+            </div>
+          )}
+          {mode==="file"&&(
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <button onClick={()=>fileRef.current?.click()} style={{padding:"7px 16px",borderRadius:7,border:"1px solid #111d2e",background:"#040b16",color:"#8090a0",fontSize:9}}>CHOOSE FILE (.txt / .vtt)</button>
+              <input ref={fileRef} type="file" accept=".txt,.vtt,.srt" onChange={async e=>{const f=e.target.files[0];if(!f)return;setPaste(await f.text());setMode("paste");}} style={{display:"none"}}/>
+              <button onClick={runDemo} disabled={busy} style={{padding:"7px 16px",borderRadius:7,border:"1px solid #1e3060",background:"transparent",color:"#4060c0",fontSize:9,opacity:busy?0.4:1}}>▶ DEMO</button>
+            </div>
+          )}
+          {mode==="paste"&&(
+            <div style={{display:"flex",gap:8}}>
+              <textarea value={paste} onChange={e=>setPaste(e.target.value)} rows={3}
+                placeholder={"Paste transcript here. Multi-speaker format:\n[CEO]: We delivered record revenue...\n[CFO]: Margins contracted slightly..."}
+                style={{flex:1,background:"#040b16",border:"1px solid #111d2e",borderRadius:7,padding:"9px 11px",color:"#8aaabb",fontSize:11,lineHeight:1.6,resize:"vertical"}}/>
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                <button onClick={submitPaste} disabled={busy||!paste.trim()} style={{padding:"9px 14px",borderRadius:7,border:"none",background:"linear-gradient(135deg,#101a40,#0c1430)",color:"#4060c0",fontSize:9,opacity:(busy||!paste.trim())?0.4:1,fontWeight:600}}>ANALYZE →</button>
+                <button onClick={runDemo} disabled={busy} style={{padding:"9px 14px",borderRadius:7,border:"1px solid #1e3060",background:"transparent",color:"#4060c0",fontSize:9,opacity:busy?0.4:1}}>▶ DEMO</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* TABS */}
+        <div style={{display:"flex",gap:1,marginBottom:11}}>
+          {[["dash","Dashboard"],["flags",`Signals (${allFlags.length})`],["tx","Transcript"],["mkt","Market"]].map(([t,l])=>(
+            <button key={t} onClick={()=>setTab(t)} style={{padding:"5px 15px",border:"none",background:tab===t?"#070e1c":"transparent",color:tab===t?"#22e5a0":"#3a4a58",fontSize:9,letterSpacing:.5,borderRadius:"5px 5px 0 0",borderBottom:tab===t?"2px solid #22e5a0":"2px solid transparent"}}>{l}</button>
+          ))}
+        </div>
+
+        {/* DASHBOARD */}
+        {tab==="dash"&&(
+          <div style={{display:"grid",gridTemplateColumns:"210px 1fr 210px",gap:11}}>
+
+            <div style={{display:"flex",flexDirection:"column",gap:9}}>
+              <div className="card" style={{animation:analysis?"glow 3s ease infinite":"none",textAlign:"center"}}>
+                <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:8}}>SENTIMENT SCORE</div>
+                {analysis?(
+                  <>
+                    <Gauge score={analysis.sentimentScore}/>
+                    <div style={{fontSize:28,fontWeight:700,color:sentColor,letterSpacing:-1,marginTop:4}}>{analysis.sentimentScore>0?"+":""}{analysis.sentimentScore}</div>
+                    <div style={{fontSize:10,color:sentColor,fontWeight:600,marginTop:3}}>{analysis.overallSentiment}</div>
+                  </>
+                ):<div style={{height:130,display:"flex",alignItems:"center",justifyContent:"center",color:"#111d2e",fontSize:9}}>AWAITING DATA</div>}
+              </div>
+
+              {analysis?.priceActionBias&&(
+                <div className="card">
+                  <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:6}}>PRICE ACTION BIAS</div>
+                  <div style={{fontSize:13,fontWeight:700,color:biasC[analysis.priceActionBias]||"#f5c842",letterSpacing:1}}>{analysis.priceActionBias.replace("_"," ")}</div>
+                  <div style={{fontSize:9,color:"#3a4a58",marginTop:4}}>Est. AH: {analysis.estimatedMove}</div>
+                </div>
+              )}
+
+              {analysis?.vsConsensus&&(
+                <div className="card">
+                  <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:10}}>VS CONSENSUS</div>
+                  {[["EPS",analysis.vsConsensus.eps],["Revenue",analysis.vsConsensus.revenue],["Guidance",analysis.vsConsensus.guidance],["Margins",analysis.vsConsensus.margins]].map(([l,v])=>(
+                    <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #0b1520"}}>
+                      <span style={{fontSize:9,color:"#3a4a58"}}>{l}</span>
+                      <span style={{fontSize:9,color:vsC(v),fontWeight:700}}>{vsI(v)} {v}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {scores.length>1&&(
+                <div className="card">
+                  <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:8}}>SCORE TREND</div>
+                  <Spark data={scores}/>
+                </div>
+              )}
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:9}}>
+              {analysis?(
+                <>
+                  <div className="card">
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:14}}>SIGNAL METRICS</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 24px"}}>
+                      <Bar label="Guidance Quality" value={nrm(analysis.metrics?.guidanceQuality)}/>
+                      <Bar label="Mgmt Credibility" value={analysis.metrics?.managementCredibility}/>
+                      <Bar label="Transparency"     value={analysis.metrics?.transparencyScore}/>
+                      <Bar label="Fwd Momentum"     value={nrm(analysis.metrics?.forwardMomentum)} color="#5070e0"/>
+                      <Bar label="Risk Level"       value={analysis.metrics?.riskSignals} color={(analysis.metrics?.riskSignals||0)>60?"#ff3d5a":"#f5c842"}/>
+                      <Bar label="Confidence"       value={analysis.confidence}/>
+                    </div>
+                  </div>
+                  <div className="card" style={{flex:1}}>
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:12}}>BUY-SIDE TAKEAWAY</div>
+                    <p style={{fontSize:13,color:"#6a8898",lineHeight:1.8,fontStyle:"italic",borderLeft:"2px solid #22e5a015",paddingLeft:14}}>"{analysis.analystTakeaway}"</p>
+                    {analysis.keyThemes?.length>0&&(
+                      <div style={{marginTop:14}}>
+                        <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:8}}>KEY THEMES</div>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                          {analysis.keyThemes.map((t,i)=><span key={i} style={{fontSize:9,padding:"2px 9px",background:"rgba(40,60,140,0.08)",border:"1px solid #1e3050",borderRadius:100,color:"#4860b0"}}>{t}</span>)}
+                        </div>
+                      </div>
+                    )}
+                    {analysis.redFlags?.length>0&&(
+                      <div style={{marginTop:14}}>
+                        <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:8}}>RED FLAGS</div>
+                        {analysis.redFlags.map((f,i)=><div key={i} style={{fontSize:10,color:"#cc5060",marginBottom:4,paddingLeft:9,borderLeft:"2px solid #ff3d5a20"}}>⚑ {f}</div>)}
+                      </div>
+                    )}
+                  </div>
+                  {allFlags.slice(0,2).length>0&&(
+                    <div className="card">
+                      <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:10}}>LATEST SIGNALS</div>
+                      {allFlags.slice(0,2).map((f,i)=><FlagCard key={f._id||i} flag={f} isNew={freshIds.has(f._id)}/>)}
+                      {allFlags.length>2&&<button onClick={()=>setTab("flags")} style={{fontSize:9,color:"#22e5a0",background:"transparent",border:"none",padding:0,marginTop:4}}>+ {allFlags.length-2} more →</button>}
+                    </div>
+                  )}
+                </>
+              ):(
+                <div className="card" style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:60,color:"#111d2e",minHeight:280,border:"1px dashed #111d2e"}}>
+                  <div style={{fontSize:44,marginBottom:14}}>◈</div>
+                  <div style={{fontSize:10,letterSpacing:2,textAlign:"center",lineHeight:2.5}}>PASTE TRANSCRIPT<br/>START MIC<br/>OR HIT ▶ DEMO</div>
+                </div>
+              )}
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:9}}>
+              {market&&(
+                <>
+                  <div className="card">
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:12}}>ANALYST CONSENSUS</div>
+                    <div style={{marginBottom:10}}><div style={{fontSize:8,color:"#3a4a58",marginBottom:3}}>EPS Estimate</div><div style={{fontSize:20,color:"#b0cce0",fontWeight:600}}>${market.epsConsensus}</div></div>
+                    <div><div style={{fontSize:8,color:"#3a4a58",marginBottom:3}}>Revenue Estimate</div><div style={{fontSize:20,color:"#b0cce0",fontWeight:600}}>${market.revenueConsensus}{market.revenueUnit}</div></div>
+                  </div>
+                  <div className="card">
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:12}}>ANALYST RATINGS</div>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                      {[["BUY",market.analystBuy,"#22e5a0"],["HOLD",market.analystHold,"#f5c842"],["SELL",market.analystSell,"#ff3d5a"]].map(([l,v,c])=>(
+                        <div key={l} style={{textAlign:"center"}}><div style={{fontSize:18,fontWeight:700,color:c}}>{v}</div><div style={{fontSize:8,color:"#3a4a58"}}>{l}</div></div>
+                      ))}
+                    </div>
+                    <div style={{height:3,background:"#040b16",borderRadius:2,display:"flex",overflow:"hidden"}}>
+                      {(()=>{const t=(market.analystBuy||0)+(market.analystHold||0)+(market.analystSell||0);if(!t)return null;return[["#22e5a0",market.analystBuy],["#f5c842",market.analystHold],["#ff3d5a",market.analystSell]].map(([c,v],i)=><div key={i} style={{width:`${(v/t)*100}%`,background:c}}/>);})()}
+                    </div>
+                  </div>
+                  <div className="card">
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:10}}>PRICE TARGETS</div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:6}}>
+                      <span style={{color:"#ff3d5a"}}>${market.priceTargetLow}</span>
+                      <span style={{color:"#f5c842",fontWeight:700}}>${market.priceTargetAvg}</span>
+                      <span style={{color:"#22e5a0"}}>${market.priceTargetHigh}</span>
+                    </div>
+                    <div style={{height:3,background:"linear-gradient(90deg,#ff3d5a,#f5c842,#22e5a0)",borderRadius:2,opacity:0.5}}/>
+                    <div style={{fontSize:8,color:"#2a3848",marginTop:8}}>Short: {market.shortInterest}</div>
+                  </div>
+                  <div className="card">
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:10}}>WATCH POINTS</div>
+                    {market.keyWatchPoints?.map((w,i)=><div key={i} style={{fontSize:9,color:"#2a3848",marginBottom:5,paddingLeft:8,borderLeft:"2px solid #111d2e",lineHeight:1.5}}>⚑ {w}</div>)}
+                  </div>
+                  <div className="card">
+                    <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:10}}>HEADLINES</div>
+                    {market.recentHeadlines?.map((h,i)=><div key={i} style={{fontSize:9,color:"#2a3848",marginBottom:6,lineHeight:1.5}}>{h}</div>)}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab==="flags"&&(
+          <div className="card">
+            <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:14}}>ALL SIGNALS — {allFlags.length}</div>
+            {allFlags.length===0?<div style={{textAlign:"center",padding:55,color:"#111d2e",fontSize:10}}>No signals yet</div>:
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:8}}>
+                {allFlags.map((f,i)=><FlagCard key={f._id||i} flag={f} isNew={freshIds.has(f._id)}/>)}
+              </div>}
+          </div>
+        )}
+
+        {tab==="tx"&&(
+          <div className="card">
+            <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:14}}>TRANSCRIPT</div>
+            <div style={{maxHeight:500,overflowY:"auto"}}>
+              {transcript.length===0?<div style={{textAlign:"center",padding:40,color:"#111d2e",fontSize:10}}>Transcript appears here</div>:
+                transcript.map((seg,i)=>{
+                  const c={CEO:"#22e5a0",CFO:"#5080e0",ANALYST:"#f5c842"}[seg.speaker]||"#4a5a6a";
+                  return<div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:"1px solid #0a1420"}}>
+                    <div style={{display:"flex",gap:8,marginBottom:5}}>
+                      <span style={{fontSize:8,fontWeight:700,color:c,background:`${c}12`,padding:"2px 7px",borderRadius:3}}>{seg.speaker}</span>
+                      <span style={{fontSize:8,color:"#1a2838"}}>{seg.ts}</span>
+                    </div>
+                    <p style={{fontSize:11,color:"#485868",lineHeight:1.75}}>{seg.text}</p>
+                  </div>;
+                })}
+              {listening&&<span style={{fontSize:11,color:"#22e5a0",animation:"pulse 1s ease infinite"}}>▌</span>}
+            </div>
+          </div>
+        )}
+
+        {tab==="mkt"&&market&&(
+          <div className="card">
+            <div style={{fontSize:8,color:"#1a2a38",letterSpacing:1,marginBottom:14}}>MARKET CONTEXT — {market.ticker}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:11,marginBottom:18}}>
+              {[["EPS Consensus",`$${market.epsConsensus}`],["Revenue Consensus",`$${market.revenueConsensus}${market.revenueUnit}`],["Price Target",`$${market.priceTargetAvg}`],["Short Interest",market.shortInterest],["Street Sentiment",market.streetSentiment]].map(([l,v])=>(
+                <div key={l} style={{background:"#040b16",border:"1px solid #111d2e",borderRadius:7,padding:"11px 13px"}}>
+                  <div style={{fontSize:8,color:"#3a4a58",textTransform:"uppercase",letterSpacing:1,marginBottom:5}}>{l}</div>
+                  <div style={{fontSize:15,color:"#a0bccc",fontWeight:600}}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {market.recentHeadlines?.map((h,i)=><div key={i} style={{padding:"9px 13px",background:"#040b16",border:"1px solid #111d2e",borderRadius:6,marginBottom:6,fontSize:10,color:"#3a4a58"}}>{h}</div>)}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
